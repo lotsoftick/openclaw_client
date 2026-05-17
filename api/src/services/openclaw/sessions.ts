@@ -49,7 +49,10 @@ function findSessionEntry(
 
 function defaultSettings(): SessionSettings {
   return {
-    thinkingLevel: 'medium',
+    /* `inherit` lets the daemon pick the model's profile-managed default
+     * instead of forcing `medium` (which several newer models — Gemini
+     * 3.1 Pro, Z.AI, MiniMax — reject as unsupported). */
+    thinkingLevel: 'inherit',
     fastMode: null,
     verboseLevel: 'inherit',
     reasoningLevel: 'inherit',

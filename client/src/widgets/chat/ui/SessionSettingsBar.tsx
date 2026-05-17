@@ -3,7 +3,17 @@ import { Box } from '@mui/material';
 import { useGetSessionSettingsQuery, usePatchSessionSettingsMutation } from '../../../entities/agent';
 import SettingChip from './SettingChip';
 
-const THINKING_OPTIONS = ['inherit', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const;
+const THINKING_OPTIONS = [
+  'inherit',
+  'off',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'adaptive',
+  'max',
+] as const;
 const FAST_OPTIONS = [
   { value: 'inherit', label: 'inherit' },
   { value: 'true', label: 'on' },

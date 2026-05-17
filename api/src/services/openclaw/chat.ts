@@ -20,9 +20,15 @@ function runAgentWithEmitter(
   emitter: SseEmitter
 ): void {
   const sessionSettings = getSessionSettingsInternal(agentId, sessionKey);
-  const thinkingArg =
-    sessionSettings.thinkingLevel === 'inherit' ? 'medium' : sessionSettings.thinkingLevel;
-  const args = ['agent', '--agent', agentId, '-m', message, '--thinking', thinkingArg];
+  const args = ['agent', '--agent', agentId, '-m', message];
+  /* Omit `--thinking` entirely when the session is set to `inherit` so the
+   * daemon uses the active model's profile-managed default. Hard-coding
+   * `medium` here would be rejected by models that don't support it
+   * (Gemini 3.1 Pro Preview lists `off|low|adaptive|high`, Z.AI is binary,
+   * MiniMax disables thinking by default — see openclaw/docs/tools/thinking.md). */
+  if (sessionSettings.thinkingLevel && sessionSettings.thinkingLevel !== 'inherit') {
+    args.push('--thinking', sessionSettings.thinkingLevel);
+  }
   if (sessionSettings.reasoningLevel && sessionSettings.reasoningLevel !== 'inherit') {
     args.push('--reasoning', sessionSettings.reasoningLevel);
   }
@@ -218,8 +224,13 @@ function runAgentViaGateway(
     message,
     agentId,
     idempotencyKey: runId,
-    thinking: sessionSettings.thinkingLevel || 'medium',
   };
+  /* Same rationale as the CLI fallback path above: only forward an
+   * explicit thinking override; `inherit` / unset → let the daemon
+   * resolve the model's profile default. */
+  if (sessionSettings.thinkingLevel && sessionSettings.thinkingLevel !== 'inherit') {
+    params.thinking = sessionSettings.thinkingLevel;
+  }
   if (sessionKey) {
     const fullKey = `agent:${agentId}:${sessionKey}`;
     params.sessionId = sessionKey;

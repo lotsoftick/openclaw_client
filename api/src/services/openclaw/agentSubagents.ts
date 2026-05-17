@@ -18,7 +18,20 @@ const CLI_OPTS = {
   timeout: 15000,
 };
 
-const ALLOWED_THINKING = new Set<string>(['minimal', 'low', 'medium', 'high', 'inherit']);
+/* Full OpenClaw thinking-level vocabulary (openclaw/docs/tools/thinking.md).
+ * Per-model the daemon may only advertise a subset; we accept any of these
+ * here and let the daemon enforce model-specific support at runtime. */
+const ALLOWED_THINKING = new Set<string>([
+  'off',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'adaptive',
+  'max',
+  'inherit',
+]);
 
 function readConfig(): OpenclawConfig | null {
   try {
