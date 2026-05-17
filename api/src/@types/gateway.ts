@@ -13,10 +13,24 @@ export interface AuthCredentials {
   };
 }
 
+export interface SharedGatewayAuth {
+  /** `gateway.auth.token` from `~/.openclaw/openclaw.json` (mode = "token"). */
+  token?: string;
+  /** `gateway.auth.password` from `~/.openclaw/openclaw.json` (mode = "password"). */
+  password?: string;
+}
+
 export interface GatewayCredentials {
-  device: DeviceCredentials;
+  /** Device identity — required for the legacy device-auth path; optional
+   *  when `sharedAuth` is configured (loopback backend clients can connect
+   *  with a shared secret and no device pairing). */
+  device: DeviceCredentials | null;
   auth: AuthCredentials;
   gatewayPort: number;
+  /** Shared-secret credentials read from the OpenClaw config file. When
+   *  present, the connect handshake uses these instead of device-pairing,
+   *  so no `openclaw devices approve` step is ever required. */
+  sharedAuth: SharedGatewayAuth | null;
 }
 
 // ── Wire protocol ──

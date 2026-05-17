@@ -21,6 +21,7 @@ import {
   EventListener,
   DeviceCredentials,
   AuthCredentials,
+  SharedGatewayAuth,
 } from '../@types/gateway';
 import { OpenclawConfig } from '../@types/openclaw';
 import { errMsg, execErrText } from '../utils/errors';
@@ -57,19 +58,58 @@ function signPayload(privPem: string, payload: string): string {
   );
 }
 
+function loadSharedAuthFromConfig(config: OpenclawConfig | null): SharedGatewayAuth | null {
+  const auth = config?.gateway?.auth;
+  if (!auth) return null;
+  const token = typeof auth.token === 'string' && auth.token.length > 0 ? auth.token : undefined;
+  const password =
+    typeof auth.password === 'string' && auth.password.length > 0 ? auth.password : undefined;
+  /* `gateway.auth.mode` may be "none" / "trusted-proxy" / unset on hosts that
+   * delegate auth elsewhere. We only opt into shared-secret auth when there's
+   * an actual secret to send; the mode field itself is informational here. */
+  if (!token && !password) return null;
+  return { token, password };
+}
+
 export function loadGatewayCredentials(): GatewayCredentials | null {
+  let config: OpenclawConfig | null = null;
+  try {
+    const configPath = path.join(OPENCLAW_HOME, 'openclaw.json');
+    config = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as OpenclawConfig;
+  } catch (err) {
+    console.warn('[gateway] could not read openclaw.json:', errMsg(err));
+    return null;
+  }
+
+  const gatewayPort = config?.gateway?.port || 18789;
+  const sharedAuth = loadSharedAuthFromConfig(config);
+
+  /* Device files are optional when shared auth is configured. Backend
+   * loopback clients (`client.id: "gateway-client"`, `client.mode: "backend"`)
+   * may omit `device` entirely on direct loopback when authenticating with a
+   * shared token/password — see openclaw/docs/gateway/protocol.md §Handshake. */
+  let device: DeviceCredentials | null = null;
+  let auth: AuthCredentials = {};
   try {
     const identityPath = path.join(OPENCLAW_HOME, 'identity', 'device.json');
     const authPath = path.join(OPENCLAW_HOME, 'identity', 'device-auth.json');
-    const configPath = path.join(OPENCLAW_HOME, 'openclaw.json');
-    const device = JSON.parse(fs.readFileSync(identityPath, 'utf-8')) as DeviceCredentials;
-    const auth = JSON.parse(fs.readFileSync(authPath, 'utf-8')) as AuthCredentials;
-    const config = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as OpenclawConfig;
-    return { device, auth, gatewayPort: config.gateway?.port || 18789 };
+    device = JSON.parse(fs.readFileSync(identityPath, 'utf-8')) as DeviceCredentials;
+    auth = JSON.parse(fs.readFileSync(authPath, 'utf-8')) as AuthCredentials;
   } catch (err) {
-    console.warn('[gateway] could not load credentials:', errMsg(err));
+    if (!sharedAuth) {
+      /* Only complain when device files are actually required (no shared
+       * auth fallback). Otherwise their absence is expected and silent. */
+      console.warn('[gateway] could not load device credentials:', errMsg(err));
+      return null;
+    }
+  }
+
+  if (!sharedAuth && !device) {
+    console.warn('[gateway] no credentials available (neither shared auth nor device pairing)');
     return null;
   }
+
+  return { device, auth, gatewayPort, sharedAuth };
 }
 
 function isConnectChallenge(
@@ -127,9 +167,12 @@ export class GatewayClient {
         return;
       }
 
-      const { device, auth, gatewayPort } = this.credentials;
+      const { device, auth, gatewayPort, sharedAuth } = this.credentials;
       const url = `ws://127.0.0.1:${gatewayPort}`;
-      console.log(`[gateway] connecting to ${url}...`);
+      let authMode: 'token' | 'password' | 'device' = 'device';
+      if (sharedAuth?.token) authMode = 'token';
+      else if (sharedAuth?.password) authMode = 'password';
+      console.log(`[gateway] connecting to ${url} (auth: ${authMode})...`);
 
       const ws = new WsWebSocket(url);
       this.ws = ws;
@@ -173,6 +216,65 @@ export class GatewayClient {
 
         if (isConnectChallenge(msg)) {
           const { nonce } = msg.payload;
+          const baseClient = {
+            id: 'gateway-client',
+            version: '1.0.0',
+            platform: process.platform,
+            mode: 'backend',
+          };
+
+          /* Prefer shared-secret auth when available — backend loopback
+           * clients can connect with `auth.token` / `auth.password` and
+           * skip device pairing entirely (no `openclaw devices approve`
+           * needed, ever). See openclaw/docs/gateway/protocol.md §Auth.
+           *
+           * Shared-secret auth is treated as trusted operator access (see
+           * docs/gateway/operator-scopes.md §Shared-secret auth), but the
+           * WebSocket connect frame still needs an explicit `role` +
+           * `scopes` declaration — the daemon doesn't auto-broaden a
+           * connection that authenticated with no claimed scopes, so
+           * subsequent `agent` / `chat.send` requests would reject with
+           * `missing scope: operator.write`. We ask for the full
+           * operator set; the daemon caps to whatever the shared secret
+           * is allowed to mint. */
+          if (sharedAuth) {
+            ws.send(
+              JSON.stringify({
+                type: 'req',
+                id: crypto.randomUUID(),
+                method: 'connect',
+                params: {
+                  minProtocol: 3,
+                  maxProtocol: 4,
+                  client: baseClient,
+                  caps: [],
+                  role: 'operator',
+                  scopes: ['operator.admin', 'operator.read', 'operator.write'],
+                  /* `auth.password` is forwarded orthogonally; `auth.token`
+                   * carries the shared token in priority order. Sending
+                   * both is harmless on hosts configured with one. */
+                  auth: {
+                    ...(sharedAuth.token ? { token: sharedAuth.token } : {}),
+                    ...(sharedAuth.password ? { password: sharedAuth.password } : {}),
+                  },
+                },
+              })
+            );
+            return;
+          }
+
+          /* Legacy device-auth path. Keeps the v3 signed-payload format
+           * for backward compat with hosts that don't have a shared
+           * gateway secret configured. */
+          if (!device) {
+            console.error('[gateway] no device credentials and no shared auth — cannot connect');
+            try {
+              ws.terminate();
+            } catch {
+              /* idempotent */
+            }
+            return;
+          }
           const role = 'operator';
           const scopes = auth.tokens?.operator?.scopes || [
             'operator.admin',
@@ -203,12 +305,7 @@ export class GatewayClient {
               params: {
                 minProtocol: 3,
                 maxProtocol: 4,
-                client: {
-                  id: 'gateway-client',
-                  version: '1.0.0',
-                  platform: process.platform,
-                  mode: 'backend',
-                },
+                client: baseClient,
                 caps: [],
                 role,
                 scopes,
@@ -507,6 +604,13 @@ export function ocSpawn(args: string[], options: SpawnOptions = {}): ChildProces
 
 export async function ensureDevicePaired(): Promise<void> {
   const creds = loadGatewayCredentials();
+  /* Shared-secret auth bypasses device pairing entirely — no scope-upgrade
+   * approval is ever needed, so this whole bootstrap is a no-op. */
+  if (creds?.sharedAuth) {
+    const mode = creds.sharedAuth.token ? 'token' : 'password';
+    console.log(`[setup] gateway shared-${mode} auth configured — skipping device pairing`);
+    return;
+  }
   const scopes = creds?.auth?.tokens?.operator?.scopes || [];
   if (scopes.includes('operator.write')) {
     console.log('[setup] device-auth already has operator.write');

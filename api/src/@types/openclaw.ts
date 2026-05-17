@@ -117,9 +117,34 @@ export interface JsonlEntry {
 
 // ── Session settings ──
 
-export type ThinkingLevel = 'minimal' | 'low' | 'medium' | 'high' | 'inherit';
+/* OpenClaw thinking-level vocabulary as of 2026.5.x.
+ * `off | minimal | low | medium | high | xhigh | adaptive | max` plus our
+ * `inherit` sentinel. Per-model the daemon may only advertise a subset
+ * (e.g. Gemini 3.1 Pro Preview only accepts `off | low | adaptive | high`);
+ * the picker UI reflects the active model's profile, but the type carries
+ * the full vocabulary so older stored values keep round-tripping.
+ * See openclaw/docs/tools/thinking.md. */
+export type ThinkingLevel =
+  | 'off'
+  | 'minimal'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
+  | 'adaptive'
+  | 'max'
+  | 'inherit';
 export type VerboseLevel = 'low' | 'medium' | 'high' | 'inherit';
-export type ReasoningLevel = 'minimal' | 'low' | 'medium' | 'high' | 'inherit';
+export type ReasoningLevel =
+  | 'off'
+  | 'minimal'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
+  | 'adaptive'
+  | 'max'
+  | 'inherit';
 
 export interface SessionSettings {
   thinkingLevel: string;
@@ -254,7 +279,17 @@ export interface AgentSkillsPatch {
 
 // ── Agent subagents ──
 
-export type AgentSubagentsThinking = 'minimal' | 'low' | 'medium' | 'high' | 'inherit' | string;
+export type AgentSubagentsThinking =
+  | 'off'
+  | 'minimal'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
+  | 'adaptive'
+  | 'max'
+  | 'inherit'
+  | string;
 
 export interface AgentSubagentsConfig {
   allowAgents: string[] | null;
@@ -377,7 +412,14 @@ export interface AgentLimitsPatch {
 
 export interface OpenclawConfig {
   agents?: OpenclawAgentsSection;
-  gateway?: { port?: number };
+  gateway?: {
+    port?: number;
+    auth?: {
+      mode?: 'none' | 'token' | 'password' | 'trusted-proxy';
+      token?: string;
+      password?: string;
+    };
+  };
   [key: string]: unknown;
 }
 

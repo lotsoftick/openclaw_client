@@ -28,10 +28,14 @@ import {
 
 const THINKING_OPTIONS: { value: string; label: string }[] = [
   { value: 'inherit', label: 'Inherit' },
+  { value: 'off', label: 'Off' },
   { value: 'minimal', label: 'Minimal' },
   { value: 'low', label: 'Low' },
   { value: 'medium', label: 'Medium' },
   { value: 'high', label: 'High' },
+  { value: 'xhigh', label: 'X-High' },
+  { value: 'adaptive', label: 'Adaptive' },
+  { value: 'max', label: 'Max' },
 ];
 
 interface AgentSubagentsProps {
