@@ -143,13 +143,76 @@ export function extractUserText(raw: string): string {
   return match ? match[1].trim() : trimmed;
 }
 
+/**
+ * Detect and remove self-repeated text. Gateway v4 can write the same
+ * assistant text 2-4x concatenated within a single JSONL entry.
+ * Only deduplicates exact N-copy repeats to avoid false positives.
+ */
+function deduplicateSelfRepeat(text: string): string {
+  if (!text || text.length < 40) return text;
+  // Normalize: collapse runs of newlines to single newline for matching,
+  // but return the original first segment (untouched) on match.
+  const normalized = text.replace(/\n{2,}/g, '\n');
+  for (let n = 2; n <= 6; n++) {
+    // Try exact division on normalized text
+    if (normalized.length % n === 0) {
+      const segLen = normalized.length / n;
+      const seg = normalized.slice(0, segLen);
+      let isRepeat = true;
+      for (let i = 1; i < n; i++) {
+        if (normalized.slice(i * segLen, (i + 1) * segLen) !== seg) {
+          isRepeat = false;
+          break;
+        }
+      }
+      if (isRepeat) {
+        // Return the original (un-normalized) first segment
+        // Find where the first copy ends in the original text
+        const firstCopyEnd = text.indexOf(seg.slice(-20)) + 20;
+        // Safer: just split by the segment and return first match
+        return text.slice(0, text.length / n).trim();
+      }
+    }
+    // Also try with flexible boundaries: check if the first ~1/n of the
+    // text repeats by searching for it later in the string
+    const approxLen = Math.floor(text.length / n);
+    for (let fuzz = -2; fuzz <= 2; fuzz++) {
+      const tryLen = approxLen + fuzz;
+      if (tryLen < 20 || tryLen >= text.length) continue;
+      const candidate = text.slice(0, tryLen).trim();
+      if (!candidate) continue;
+      // Check if the rest of the text is just repeats of candidate (with whitespace flex)
+      let pos = tryLen;
+      let copies = 1;
+      while (pos < text.length) {
+        // Skip whitespace between copies
+        while (pos < text.length && /\s/.test(text[pos])) pos++;
+        if (pos >= text.length) break;
+        if (text.startsWith(candidate, pos)) {
+          copies++;
+          pos += candidate.length;
+        } else {
+          break;
+        }
+      }
+      // Allow trailing whitespace
+      const remaining = text.slice(pos).trim();
+      if (copies === n && remaining.length === 0) {
+        return candidate;
+      }
+    }
+  }
+  return text;
+}
+
 export function extractAssistantText(raw: string): string {
-  return raw
+  const cleaned = raw
     .replace(/<\/?final>/gi, '')
     .replace(/<think>[\s\S]*?<\/think>/gi, '')
     .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
     .replace(/<redacted_thinking>[\s\S]*?<\/redacted_thinking>/gi, '')
     .trim();
+  return deduplicateSelfRepeat(cleaned);
 }
 
 function readJsonlLines(jsonlPath: string): JsonlEntry[] {

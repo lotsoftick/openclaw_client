@@ -162,8 +162,10 @@ function runAgentViaGateway(
 ): ChatRunHandle {
   const runId = crypto.randomUUID();
   const listenerKey = `agent-${runId}`;
-  let assistantSent = '';
+  let assistantSent = '';     // current gateway segment text
+  let assistantTotal = '';     // everything emitted to the client so far
   let reasoningSent = '';
+  let reasoningTotal = '';
 
   gateway.onEvent(listenerKey, (msg: GwInboundMessage) => {
     if (!isAgentEvent(msg)) return;
@@ -181,41 +183,63 @@ function runAgentViaGateway(
     const clean = stripGatewayTags(fullText);
     if (!clean || GW_RE_PARTIAL_TAG.test(clean)) return;
 
-    const alreadySent = stream === 'assistant' ? assistantSent : reasoningSent;
+    const seg = stream === 'assistant' ? assistantSent : reasoningSent;
+    const total = stream === 'assistant' ? assistantTotal : reasoningTotal;
     const sseType =
       stream === 'assistant' ? 'response.output_text.delta' : 'response.thinking.delta';
 
-    /* OpenClaw 2026.5.12 (#80725) bumped the gateway to v4 and now emits the
-     * assistant turn *twice* on the `agent` channel: once with the raw
-     * `<final>…</final>` wrapping during streaming, then again post-processed
-     * with the wrapper stripped. Our `stripGatewayTags` reduces both passes
-     * to the same `clean` text, so the second pass arrives as `clean = "T",
-     * "Te", "Tes", …` while `alreadySent` already holds the full first pass.
-     * The old logic treated this as a "rewrite" and re-emitted the full
-     * content, causing the assistant bubble to render the same reply twice
-     * concatenated (UI shows `…Still 249 and 153!Test 4 received!…`).
+    function emitNew(text: string, newSeg: string) {
+      if (stream === 'assistant') { assistantSent = newSeg; assistantTotal += text; }
+      else { reasoningSent = newSeg; reasoningTotal += text; }
+      emitter.send(sseType, text);
+    }
+
+    function updateSeg(newSeg: string) {
+      if (stream === 'assistant') assistantSent = newSeg;
+      else reasoningSent = newSeg;
+    }
+
+    /* Gateway v4 streaming dedup.
      *
-     * Three cases now:
-     *   1. `clean` strictly extends `alreadySent` → emit the new tail.
-     *   2. `clean` is a prefix of `alreadySent` (daemon restarted the same
-     *      content) → drop; the client already shows at least this much.
-     *   3. Otherwise (genuine rewrite of different content) → fall back to
-     *      emitting the whole `clean`. The SSE consumer appends, which is
-     *      imperfect for true rewrites but matches pre-v4 behaviour and
-     *      doesn't trigger on the duplicate-turn pattern.
+     * We track two accumulators per stream:
+     *   seg   — the gateway's current segment text (resets between tool-call rounds)
+     *   total — everything we have emitted to the client across ALL segments
+     *
+     * Cases:
+     *   1. clean extends seg (normal incremental growth) → emit tail
+     *   2. clean extends total (gateway sent accumulated text from turn start) → emit tail beyond total
+     *   3. seg starts with clean AND clean is shorter (replay/shrink) → skip
+     *   4. overlap between total's suffix and clean's prefix → emit only the new tail
+     *   5. none of the above (genuinely new segment) → emit all, append to total
      */
-    if (clean.length > alreadySent.length && clean.startsWith(alreadySent)) {
-      const newContent = clean.substring(alreadySent.length);
-      if (stream === 'assistant') assistantSent = clean;
-      else reasoningSent = clean;
-      emitter.send(sseType, newContent);
-    } else if (alreadySent.startsWith(clean)) {
-      /* Daemon-side restart of identical content (v4 post-process pass).
-       * Skip — nothing new to surface to the client. */
+    if (clean.length > seg.length && clean.startsWith(seg)) {
+      /* Case 1: normal incremental growth within current segment */
+      const tail = clean.substring(seg.length);
+      emitNew(tail, clean);
+    } else if (total.length > 0 && clean.length > total.length && clean.startsWith(total)) {
+      /* Case 2: gateway sent accumulated text from beginning of turn */
+      const tail = clean.substring(total.length);
+      if (stream === 'assistant') { assistantSent = clean; assistantTotal = clean; }
+      else { reasoningSent = clean; reasoningTotal = clean; }
+      emitter.send(sseType, tail);
+    } else if (seg.length > 0 && seg.startsWith(clean) && clean.length < seg.length) {
+      /* Case 3: replay of content already sent (text shrunk back) — skip.
+       * Do NOT reset seg here; keeping it at the longer value prevents
+       * subsequent incremental events from re-emitting the delta between
+       * the shrunk position and the next growth. */
     } else {
-      if (stream === 'assistant') assistantSent = clean;
-      else reasoningSent = clean;
-      emitter.send(sseType, clean);
+      /* Cases 4 & 5: check for overlap between total and clean */
+      let overlap = Math.min(total.length, clean.length);
+      while (overlap > 0 && !total.endsWith(clean.slice(0, overlap))) overlap--;
+      if (overlap > 0) {
+        /* Case 4: playback concatenation — emit only the genuinely new tail */
+        const tail = clean.slice(overlap);
+        if (tail.length) emitNew(tail, clean);
+        else updateSeg(clean);
+      } else {
+        /* Case 5: genuinely new text segment after tool calls */
+        emitNew(clean, clean);
+      }
     }
   });
 
@@ -238,7 +262,7 @@ function runAgentViaGateway(
   }
 
   gateway
-    .request('agent', params, { expectFinal: true, timeoutMs: 120000 })
+    .request('agent', params, { expectFinal: true, timeoutMs: 600000 })
     .then(() => {
       gateway.offEvent(listenerKey);
       if (sessionKey) {

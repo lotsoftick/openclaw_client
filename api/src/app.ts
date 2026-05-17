@@ -48,7 +48,8 @@ const PORT = Number(process.env.PORT) || 18802;
         : colors.yellow('[gateway] initial connection failed, will use CLI fallback')
     );
 
-    const server = app.listen(PORT, () => console.log(colors.green(`running on port ${PORT}`)));
+    const API_HOST = process.env.API_HOST || '0.0.0.0';
+    const server = app.listen(PORT, API_HOST, () => console.log(colors.green(`running on ${API_HOST}:${PORT}`)));
     attachPtyWebSocket(server);
     startUpdateChecker();
   } catch (error) {

@@ -200,41 +200,18 @@ const chat: Chat = async (req, res, next) => {
         .catch(() => {});
     }
 
-    // Fetch messages from JSONL to get externalIds
+    // Link the user message to its JSONL externalId so the poll
+    // endpoint can recognise it later and skip duplicate inserts.
+    // Assistant message persistence is left entirely to the poll
+    // endpoint which has robust dedup logic; saving it here as well
+    // caused duplicate rows because the JSONL externalId can shift
+    // between reads (gateway v4 multi-pass writes).
     try {
       const jsonlMessages = ocService.getSessionMessages(agentIdForFiles, sessionKey);
       if (jsonlMessages.length) {
         const lastUserJsonl = [...jsonlMessages].reverse().find((m) => m.role === 'user');
-        const lastAssistantJsonl = [...jsonlMessages].reverse().find((m) => m.role === 'assistant');
-
         if (lastUserJsonl?.externalId) {
           await msgRepo.update(savedUser._id, { externalId: lastUserJsonl.externalId });
-        }
-
-        // Save assistant message from JSONL
-        if (lastAssistantJsonl) {
-          const assistantText = stripWrapperTags(lastAssistantJsonl.text).trim();
-          const assistantThinking = lastAssistantJsonl.thinking
-            ? stripWrapperTags(lastAssistantJsonl.thinking).trim()
-            : null;
-          const assistantToolSteps = lastAssistantJsonl.toolSteps ?? null;
-
-          /* Persist if we got any signal: real text, thinking, or tool calls
-           * — the last produces a compact tool-stub bubble in the UI. */
-          if (assistantText || assistantThinking || (assistantToolSteps && assistantToolSteps.length > 0)) {
-            const assistantMessage = msgRepo.create({
-              conversationId: Number(conversationId),
-              externalId: lastAssistantJsonl.externalId || null,
-              text: assistantText,
-              thinking: assistantThinking || null,
-              toolSteps:
-                assistantToolSteps && assistantToolSteps.length > 0 ? assistantToolSteps : null,
-              role: 'assistant' as const,
-              createdBy: req.user!._id,
-              createdAt: new Date(),
-            });
-            await msgRepo.save(assistantMessage);
-          }
         }
       }
     } catch {
@@ -410,22 +387,73 @@ const poll: RequestHandler<{ conversationId: string }, unknown, never, { after?:
       }
 
       if (toInsert.length) {
-        await msgRepo.save(
-          toInsert.map((m) =>
-            msgRepo.create({
-              conversationId: convId,
-              externalId: m.externalId,
-              text: m.text,
-              thinking: m.thinking || null,
-              toolSteps: m.toolSteps && m.toolSteps.length > 0 ? m.toolSteps : null,
-              files: [],
-              role: m.role as 'user' | 'assistant',
-              createdBy: req.user!._id,
-              createdAt: m.timestamp ? new Date(m.timestamp) : new Date(),
+        /* Guard against duplicate assistant rows caused by shifting
+         * externalIds. Gateway v4 rewrites JSONL entries during
+         * multi-tool-call turns, so the merged externalId changes
+         * between polls. Before inserting an assistant candidate,
+         * check whether the DB already has a recent assistant row
+         * whose text is a prefix of (or equal to) the new text.
+         * If so, update that row instead of inserting a duplicate. */
+        const recentAssistants = toInsert.some((m) => m.role === 'assistant')
+          ? await msgRepo.find({
+              where: {
+                conversationId: convId,
+                role: 'assistant',
+                createdAt: MoreThan(new Date(Date.now() - 300_000)),
+              },
+              order: { _id: 'DESC' },
+              take: 10,
             })
-          )
-        );
-        synced += toInsert.length;
+          : [];
+
+        const actualInserts: typeof toInsert = [];
+        for (const m of toInsert) {
+          if (m.role === 'assistant' && m.text) {
+            const existing = recentAssistants.find(
+              (r) =>
+                (r.text && m.text.startsWith(r.text)) ||
+                (r.text && r.text.startsWith(m.text)) ||
+                r.text === m.text
+            );
+            if (existing) {
+              // Update the existing row with the latest text / externalId
+              const patch: Record<string, unknown> = { externalId: m.externalId };
+              if (m.text.length >= (existing.text?.length || 0)) patch.text = m.text;
+              if (m.thinking) patch.thinking = m.thinking;
+              if (m.toolSteps && m.toolSteps.length > 0) patch.toolSteps = m.toolSteps;
+              await msgRepo.update(
+                existing._id,
+                patch as unknown as Parameters<typeof msgRepo.update>[1]
+              );
+              // Update the row in recentAssistants so subsequent candidates
+              // can also match against it with the new text.
+              existing.text = m.text.length >= (existing.text?.length || 0) ? m.text : existing.text;
+              existing.externalId = m.externalId!;
+              synced++;
+              continue;
+            }
+          }
+          actualInserts.push(m);
+        }
+
+        if (actualInserts.length) {
+          await msgRepo.save(
+            actualInserts.map((m) =>
+              msgRepo.create({
+                conversationId: convId,
+                externalId: m.externalId,
+                text: m.text,
+                thinking: m.thinking || null,
+                toolSteps: m.toolSteps && m.toolSteps.length > 0 ? m.toolSteps : null,
+                files: [],
+                role: m.role as 'user' | 'assistant',
+                createdBy: req.user!._id,
+                createdAt: m.timestamp ? new Date(m.timestamp) : new Date(),
+              })
+            )
+          );
+          synced += actualInserts.length;
+        }
       }
 
       /* Refresh already-linked assistant rows against the current JSONL.

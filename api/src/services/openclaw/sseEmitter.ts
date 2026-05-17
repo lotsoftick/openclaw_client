@@ -13,15 +13,22 @@ export function stripGatewayTags(text: string): string {
 }
 
 export function createSseEmitter(res: Response): SseEmitter {
+  // Send SSE comment keepalives every 5s to prevent the browser
+  // from treating the connection as stale during tool-call silences.
+  const keepalive = setInterval(() => {
+    try { res.write(': keepalive\n\n'); } catch { /* connection closed */ }
+  }, 5000);
   return {
     send(type, delta) {
       res.write(`data: ${JSON.stringify({ type, delta })}\n\n`);
     },
     done() {
+      clearInterval(keepalive);
       res.write('data: [DONE]\n\n');
       res.end();
     },
     error(msg) {
+      clearInterval(keepalive);
       const text = msg || 'Agent run failed.';
       if (!res.headersSent) {
         res.status(500).json({ error: text });
