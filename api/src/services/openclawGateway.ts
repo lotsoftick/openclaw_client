@@ -226,7 +226,17 @@ export class GatewayClient {
           /* Prefer shared-secret auth when available — backend loopback
            * clients can connect with `auth.token` / `auth.password` and
            * skip device pairing entirely (no `openclaw devices approve`
-           * needed, ever). See openclaw/docs/gateway/protocol.md §Auth. */
+           * needed, ever). See openclaw/docs/gateway/protocol.md §Auth.
+           *
+           * Shared-secret auth is treated as trusted operator access (see
+           * docs/gateway/operator-scopes.md §Shared-secret auth), but the
+           * WebSocket connect frame still needs an explicit `role` +
+           * `scopes` declaration — the daemon doesn't auto-broaden a
+           * connection that authenticated with no claimed scopes, so
+           * subsequent `agent` / `chat.send` requests would reject with
+           * `missing scope: operator.write`. We ask for the full
+           * operator set; the daemon caps to whatever the shared secret
+           * is allowed to mint. */
           if (sharedAuth) {
             ws.send(
               JSON.stringify({
@@ -238,6 +248,8 @@ export class GatewayClient {
                   maxProtocol: 4,
                   client: baseClient,
                   caps: [],
+                  role: 'operator',
+                  scopes: ['operator.admin', 'operator.read', 'operator.write'],
                   /* `auth.password` is forwarded orthogonally; `auth.token`
                    * carries the shared token in priority order. Sending
                    * both is harmless on hosts configured with one. */
