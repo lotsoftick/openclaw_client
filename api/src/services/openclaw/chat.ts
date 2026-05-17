@@ -284,15 +284,21 @@ export async function runChat(
   try {
     const gwReady = await gateway.ensureConnected();
     const creds = gwReady ? loadGatewayCredentials() : null;
-    const hasWriteScope = creds
-      ? (creds.auth.tokens?.operator?.scopes || []).includes('operator.write')
+    /* Shared-token / shared-password auth on the daemon implies full
+     * gateway authorization, so the device-scope check is moot in that
+     * mode (and would always fail because device tokens carry no scopes
+     * when shared auth is configured). Fall back to the device-auth
+     * scope gate only on hosts that don't have a shared secret. */
+    const canUseGateway = creds
+      ? Boolean(creds.sharedAuth) ||
+        (creds.auth.tokens?.operator?.scopes || []).includes('operator.write')
       : false;
 
-    if (gwReady && hasWriteScope) {
+    if (gwReady && canUseGateway) {
       console.log('[chat] using gateway direct connection');
       runAgentViaGateway(agentId, fullMessage, sessionKey, emitter);
     } else {
-      if (gwReady && !hasWriteScope) {
+      if (gwReady && !canUseGateway) {
         console.log(
           '[chat] gateway connected but device-auth lacks operator.write — using CLI fallback. ' +
             'Fix: openclaw devices list → openclaw devices approve <id>'
