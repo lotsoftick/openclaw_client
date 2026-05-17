@@ -377,7 +377,14 @@ export interface AgentLimitsPatch {
 
 export interface OpenclawConfig {
   agents?: OpenclawAgentsSection;
-  gateway?: { port?: number };
+  gateway?: {
+    port?: number;
+    auth?: {
+      mode?: 'none' | 'token' | 'password' | 'trusted-proxy';
+      token?: string;
+      password?: string;
+    };
+  };
   [key: string]: unknown;
 }
 
