@@ -35,10 +35,28 @@ async function fetchPtyTicket(): Promise<string> {
   return body.ticket;
 }
 
+/**
+ * Resolve the websocket origin (`wss://host[:port]`) for /ws/pty.
+ *
+ * `API_BASE_URL` is either:
+ *   - an absolute URL ("http://1.2.3.4:18802/api") — use its scheme + host
+ *   - a relative path ("/api") — `new URL(...)` would throw, so we fall
+ *     back to `window.location` (the page origin), which is what nginx
+ *     is fronting in the `USE_RELATIVE_API_URL=1` deployment.
+ */
+function wsOrigin(): string {
+  try {
+    const u = new URL(API_BASE_URL);
+    const proto = u.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${proto}//${u.host}`;
+  } catch {
+    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${proto}//${window.location.host}`;
+  }
+}
+
 function buildWsUrl(agentName: string, ticket: string): string {
-  const base = API_BASE_URL.replace(/\/api\/?$/, '');
-  const wsBase = base.replace(/^http/, 'ws');
-  return `${wsBase}/ws/pty?agent=${encodeURIComponent(agentName)}&ticket=${encodeURIComponent(ticket)}`;
+  return `${wsOrigin()}/ws/pty?agent=${encodeURIComponent(agentName)}&ticket=${encodeURIComponent(ticket)}`;
 }
 
 const AUTO_CLOSE_MS = 2500;

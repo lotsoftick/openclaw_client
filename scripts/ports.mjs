@@ -38,6 +38,11 @@ export function ensureUserEnv() {
         '# Change these values then run: openclaw_client restart',
         `API_PORT=${DEFAULT_API_PORT}`,
         `CLIENT_PORT=${DEFAULT_CLIENT_PORT}`,
+        '# When you front the client with a reverse proxy (e.g. nginx) on a',
+        '# single domain like https://openclaw.example.com and route /api/* to',
+        '# the API, set this to 1. The browser will then issue same-origin',
+        '# requests to /api/* and the API_PORT is no longer exposed.',
+        '# USE_RELATIVE_API_URL=0',
         '',
       ].join('\n'),
     );
@@ -52,6 +57,21 @@ export function ensureUserEnv() {
     const sep = existing.endsWith('\n') ? '' : '\n';
     fs.writeFileSync(USER_ENV_FILE, `${existing}${sep}${additions.join('\n')}\n`);
   }
+}
+
+/**
+ * Parse the truthy set of values commonly used as boolean env vars. Mirrors
+ * the convention used by `OPENCLAW_TRUST_PROXY` so all flags accept the same
+ * lenient inputs (1/true/yes/on, any case).
+ */
+export function envFlag(value) {
+  return ['1', 'true', 'yes', 'on'].includes(String(value || '').toLowerCase());
+}
+
+/** Read the USE_RELATIVE_API_URL toggle from ~/.openclaw_client/.env. */
+export function readUseRelativeApiUrl() {
+  ensureUserEnv();
+  return envFlag(parseEnvFile(USER_ENV_FILE).USE_RELATIVE_API_URL);
 }
 
 /** Read port configuration from ~/.openclaw_client/.env (creating it first if missing). */

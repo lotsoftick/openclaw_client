@@ -18,6 +18,16 @@ const DIST_REAL = fs.realpathSync(DIST);
 const PORT = Number(process.env.CLIENT_PORT) || Number(process.env.PORT) || 18800;
 const API_PORT = Number(process.env.API_PORT) || 18802;
 
+// When the install sits behind a reverse proxy on a single domain
+// (https://openclaw.example.com) and the operator routes /api/* to the
+// API, this flag tells the browser to use \`/api\` instead of a
+// host:port URL. We resolve it once at startup — flipping the value
+// requires a restart, which is consistent with how API_PORT / CLIENT_PORT
+// work.
+const USE_RELATIVE_API_URL = ['1', 'true', 'yes', 'on'].includes(
+  String(process.env.USE_RELATIVE_API_URL || '').toLowerCase()
+);
+
 const MIME = {
   '.html': 'text/html', '.js': 'application/javascript', '.mjs': 'application/javascript',
   '.css': 'text/css', '.json': 'application/json',
@@ -34,9 +44,18 @@ const MIME = {
 const NO_CACHE_FILES = new Set(['sw.js', 'registerSW.js', 'workbox-window.prod.es5.mjs']);
 
 function injectRuntimeConfig(html, hostHeader) {
-  const hostname = (hostHeader || '').split(':')[0] || 'localhost';
-  const apiBaseUrl = 'http://' + hostname + ':' + API_PORT + '/api';
-  const cfg = JSON.stringify({ apiBaseUrl, apiPort: API_PORT });
+  let cfg;
+  if (USE_RELATIVE_API_URL) {
+    // Same-origin path. The reverse proxy (nginx, Caddy, …) routes
+    // /api/* to the API and /ws/* to the API's websocket endpoints.
+    // No host or port leaks into the bundle, so the same build works
+    // for every domain that fronts it.
+    cfg = JSON.stringify({ apiBaseUrl: '/api' });
+  } else {
+    const hostname = (hostHeader || '').split(':')[0] || 'localhost';
+    const apiBaseUrl = 'http://' + hostname + ':' + API_PORT + '/api';
+    cfg = JSON.stringify({ apiBaseUrl, apiPort: API_PORT });
+  }
   const tag = '<script>window.__OPENCLAW_CONFIG__=' + cfg + ';</script>';
   if (html.includes('</head>')) return html.replace('</head>', '  ' + tag + '\\n  </head>');
   return tag + html;

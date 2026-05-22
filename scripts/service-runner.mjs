@@ -40,12 +40,22 @@ const clientPort = Number(userEnv.CLIENT_PORT) || 18800;
 // the request host, so the same install works on localhost, LAN, and
 // Tailscale. Users who want strict CORS set ALLOWED_DOMAIN and
 // OPENCLAW_STRICT_CORS=1 in ~/.openclaw_client/api/.env themselves.
+//
+// USE_RELATIVE_API_URL is opt-in and only meaningful for the static
+// `serve.mjs` child — it makes the page inject `apiBaseUrl: '/api'`
+// into `window.__OPENCLAW_CONFIG__` so the browser issues same-origin
+// requests when a reverse proxy fronts the install on a single
+// domain. We forward it unconditionally so it survives an upstream
+// process restart without re-reading the user .env.
 const childEnv = {
   ...process.env,
   NODE_ENV: 'production',
   API_PORT: String(apiPort),
   CLIENT_PORT: String(clientPort),
   PORT: String(apiPort),
+  ...(userEnv.USE_RELATIVE_API_URL !== undefined
+    ? { USE_RELATIVE_API_URL: userEnv.USE_RELATIVE_API_URL }
+    : {}),
 };
 
 const children = [];
