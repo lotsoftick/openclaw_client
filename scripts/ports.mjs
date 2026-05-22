@@ -110,11 +110,22 @@ export function readPorts() {
  * non-standard port.
  */
 export function portEnv() {
-  const { apiPort, clientPort } = readPorts();
+  ensureUserEnv();
+  const userEnv = parseEnvFile(USER_ENV_FILE);
+  const apiPort = Number(userEnv.API_PORT) || DEFAULT_API_PORT;
+  const clientPort = Number(userEnv.CLIENT_PORT) || DEFAULT_CLIENT_PORT;
   return {
     API_PORT: String(apiPort),
     CLIENT_PORT: String(clientPort),
     PORT: String(apiPort),
     VITE_API_PORT: String(apiPort),
+    /* Forward USE_RELATIVE_API_URL from the user .env so reverse-proxy
+     * installs survive `openclaw_client restart` on Linux/Windows, where
+     * `cli.mjs#detachStart` spawns `serve.mjs` directly (no
+     * service-runner shim to re-read the file). The value is preserved
+     * verbatim so "0" / "false" still suppress the flag downstream. */
+    ...(userEnv.USE_RELATIVE_API_URL !== undefined
+      ? { USE_RELATIVE_API_URL: userEnv.USE_RELATIVE_API_URL }
+      : {}),
   };
 }
