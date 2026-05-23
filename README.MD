@@ -2,8 +2,6 @@
 
 A web-based chat interface for [OpenClaw](https://openclaw.ai) AI agents. Create multiple agents, manage conversations, upload files, and stream AI responses in real time — all through a clean, modern UI.
 
-https://github.com/user-attachments/assets/500f4f44-13e8-4e08-8bfc-9b2458c22ae1
-
 ## Features
 
 - **Multi-agent support** — Create and manage multiple OpenClaw agents, each with their own model, identity, and conversation history.
@@ -60,6 +58,24 @@ npm start
 | API Docs | http://localhost:18802/api/docs |
 
 > **Note:** API Docs (Swagger) are only available in development mode (`npm run dev`).
+
+## TweetClaw X/Twitter Workflows
+
+OpenClaw Client can run external OpenClaw plugins through the same local
+OpenClaw CLI it already manages. For agents that need X/Twitter research,
+monitoring, follower context, media workflows, or reviewed posting, install
+TweetClaw from npm and then verify it in the Client Plugins and Skills pages:
+
+```bash
+openclaw plugins install @xquik/tweetclaw
+openclaw config set tools.alsoAllow '["explore", "tweetclaw"]'
+openclaw plugins inspect tweetclaw --runtime
+```
+
+See [TweetClaw X/Twitter Workflows](docs/tweetclaw-x-twitter-workflows.md) for a
+complete setup path, credential safety notes, agent prompts, Cron job recipes,
+and approval boundaries for post tweets, post tweet replies, direct messages,
+media upload, media download, monitor tweets, webhooks, and giveaway draws.
 
 ## Default Login
 
