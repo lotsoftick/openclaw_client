@@ -46,12 +46,67 @@ function killPorts() {
   for (const port of all) killPort(port);
 }
 
+const SYSTEMD_SYSTEM_UNIT = '/etc/systemd/system/openclaw_client.service';
+const SYSTEMD_USER_UNIT = path.join(
+  os.homedir(),
+  '.config',
+  'systemd',
+  'user',
+  'openclaw_client.service'
+);
+
+export function restartViaSupervisor() {
+  if (IS_DARWIN) {
+    if (!existsSync(getPlistPath())) return 'unsupervised';
+    try {
+      if (launchAgentIsLoaded()) kickstartLaunchAgent();
+      else bootstrapLaunchAgent();
+      return 'restarted';
+    } catch {
+      return 'failed';
+    }
+  }
+
+  if (process.platform === 'linux') {
+    /* Prefer system unit (the openclaw-setup.sh path) over the per-user
+     * unit, since the system unit is what the install script writes.
+     * Either is sufficient to claim "supervised". */
+    if (existsSync(SYSTEMD_SYSTEM_UNIT)) {
+      try {
+        execFileSync('systemctl', ['restart', 'openclaw_client.service'], { stdio: 'inherit' });
+        return 'restarted';
+      } catch {
+        return 'failed';
+      }
+    }
+    if (existsSync(SYSTEMD_USER_UNIT)) {
+      try {
+        execFileSync('systemctl', ['--user', 'restart', 'openclaw_client.service'], {
+          stdio: 'inherit',
+        });
+        return 'restarted';
+      } catch {
+        return 'failed';
+      }
+    }
+  }
+
+  /* Windows installs go through the Startup folder — that's a one-shot
+   * launcher, not a process supervisor, so we don't try to "restart" via
+   * it. Fall through to detach, which is what was happening before. */
+  return 'unsupervised';
+}
+
 function linkGlobal() {
   execFileSync(NPM_BIN, ['link'], { cwd: ROOT, stdio: 'pipe' });
 }
 
 function unlinkGlobal() {
-  try { execFileSync(NPM_BIN, ['unlink', '-g', 'openclaw-client'], { stdio: 'pipe' }); } catch { /* ok */ }
+  try {
+    execFileSync(NPM_BIN, ['unlink', '-g', 'openclaw-client'], { stdio: 'pipe' });
+  } catch {
+    /* ok */
+  }
 }
 
 function assertBuilt() {
@@ -120,8 +175,33 @@ function confirm(question) {
 /** npm start only — full build + deploy + autostart (os-specific) + global link */
 export function fullStart() {
   deploy();
-  killPorts();
 
+  const supervised = restartViaSupervisor();
+  if (supervised === 'restarted') {
+    linkGlobal();
+    const { clientPort } = currentPorts();
+    console.log('');
+    console.log('  🚀 OpenClaw Client is running (restarted via supervisor)');
+    console.log(`  🌐 http://localhost:${clientPort}`);
+    console.log('  📁 ~/.openclaw_client');
+    console.log('  ⚙️  Ports: ~/.openclaw_client/.env');
+    console.log('');
+    return;
+  }
+  if (supervised === 'failed') {
+    console.error(
+      '\n❌ A process supervisor (systemd unit / LaunchAgent) is installed but\n' +
+        '   the restart command failed. NOT spawning detached children — that\n' +
+        '   would double-bind the ports and corrupt the install. Inspect:\n\n' +
+        '     systemctl status openclaw_client    # Linux\n' +
+        '     launchctl print gui/$UID/com.openclaw.client    # macOS\n' +
+        '     journalctl -u openclaw_client -n 50\n'
+    );
+    process.exit(1);
+  }
+
+  /* Unsupervised install — legacy detach path. */
+  killPorts();
   if (IS_DARWIN) {
     installLaunchd();
   } else if (IS_WINDOWS) {
@@ -199,7 +279,11 @@ function cmdStatus() {
 
   if (IS_DARWIN) {
     try {
-      const out = execFileSync('launchctl', ['print', `${getLaunchdDomain()}/${LAUNCH_AGENT_LABEL}`], { encoding: 'utf-8' });
+      const out = execFileSync(
+        'launchctl',
+        ['print', `${getLaunchdDomain()}/${LAUNCH_AGENT_LABEL}`],
+        { encoding: 'utf-8' }
+      );
       const state = out.match(/^\s*state = (\S+)/m)?.[1] ?? 'unknown';
       const pid = out.match(/^\s*pid = (\d+)/m)?.[1];
       if (state === 'running') {
@@ -291,8 +375,11 @@ function isCliMain() {
   const entry = process.argv[1];
   if (!entry) return false;
   const here = fileURLToPath(import.meta.url);
-  try { return realpathSync(path.resolve(entry)) === realpathSync(here); }
-  catch { return path.resolve(entry) === path.resolve(here); }
+  try {
+    return realpathSync(path.resolve(entry)) === realpathSync(here);
+  } catch {
+    return path.resolve(entry) === path.resolve(here);
+  }
 }
 
 if (isCliMain()) {
@@ -306,11 +393,21 @@ if (isCliMain()) {
 
   try {
     switch (cmd) {
-      case 'start': cmdStart(); break;
-      case 'stop': cmdStop(); break;
-      case 'restart': cmdRestart(); break;
-      case 'status': cmdStatus(); break;
-      case 'uninstall': await cmdUninstall(argv.slice(1)); break;
+      case 'start':
+        cmdStart();
+        break;
+      case 'stop':
+        cmdStop();
+        break;
+      case 'restart':
+        cmdRestart();
+        break;
+      case 'status':
+        cmdStatus();
+        break;
+      case 'uninstall':
+        await cmdUninstall(argv.slice(1));
+        break;
       default:
         console.error(`Unknown command: ${cmd}`);
         printUsage();
