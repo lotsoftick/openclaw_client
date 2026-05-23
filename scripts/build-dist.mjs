@@ -167,14 +167,31 @@ export function deploy() {
   }
 
   const { apiPort, clientPort } = readPorts();
-  const buildEnv = { ...process.env, ...portEnv() };
+
+  function buildEnvWithHeapFloor() {
+    const base = { ...process.env, ...portEnv() };
+    const floorMb = Number(process.env.OPENCLAW_BUILD_MAX_OLD_SPACE_MB) || 4096;
+    const existing = base.NODE_OPTIONS || '';
+    if (/--max-old-space-size=/.test(existing)) return base;
+    base.NODE_OPTIONS = `${existing} --max-old-space-size=${floorMb}`.trim();
+    return base;
+  }
+  const buildEnv = buildEnvWithHeapFloor();
 
   process.stdout.write('📦 Installing dependencies...\n');
   run(NPM_BIN, ['ci', '--include=dev'], API_SRC);
   run(NPM_BIN, ['ci', '--include=dev'], CLIENT_SRC);
 
   process.stdout.write('🔨 Building...\n');
-  run(NPM_BIN, ['run', 'build'], API_SRC);
+  try {
+    execFileSync(NPM_BIN, ['run', 'build'], { cwd: API_SRC, stdio: 'pipe', env: buildEnv });
+  } catch (err) {
+    const output = err.stdout?.toString() || '';
+    const stderr = err.stderr?.toString() || '';
+    if (output) process.stderr.write(output);
+    if (stderr) process.stderr.write(stderr);
+    throw err;
+  }
   // VITE_API_PORT is embedded into the bundle as a fallback; the
   // runtime resolves the actual API origin from the page's hostname so
   // the same build works on localhost, LAN, and Tailscale.
