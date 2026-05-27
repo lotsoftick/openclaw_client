@@ -46,18 +46,6 @@ const apiPublicUrl = (req: {
   return envOverride || 'http://localhost:18802';
 };
 
-function stripWrapperTags(text: string): string {
-  return text
-    .replace(
-      /<(?:think|thinking|redacted_thinking)>[\s\S]*?<\/(?:think|thinking|redacted_thinking)>/gi,
-      ''
-    )
-    .replace(/^<(?:final|output|think|thinking|redacted_thinking)\b[^>]*>/i, '')
-    .replace(/<\/(?:final|output|think|thinking|redacted_thinking)\s*>\s*$/i, '')
-    .replace(/<\/[a-z]*\s*$/i, '')
-    .trim();
-}
-
 const uploadsDir = path.join(__dirname, '../../public/uploads');
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
@@ -407,33 +395,68 @@ const poll: RequestHandler<{ conversationId: string }, unknown, never, { after?:
           : [];
 
         const actualInserts: typeof toInsert = [];
-        for (const m of toInsert) {
-          if (m.role === 'assistant' && m.text) {
-            const existing = recentAssistants.find(
-              (r) =>
-                (r.text && m.text.startsWith(r.text)) ||
-                (r.text && r.text.startsWith(m.text)) ||
-                r.text === m.text
-            );
-            if (existing) {
-              // Update the existing row with the latest text / externalId
-              const patch: Record<string, unknown> = { externalId: m.externalId };
-              if (m.text.length >= (existing.text?.length || 0)) patch.text = m.text;
-              if (m.thinking) patch.thinking = m.thinking;
-              if (m.toolSteps && m.toolSteps.length > 0) patch.toolSteps = m.toolSteps;
-              await msgRepo.update(
-                existing._id,
-                patch as unknown as Parameters<typeof msgRepo.update>[1]
-              );
-              // Update the row in recentAssistants so subsequent candidates
-              // can also match against it with the new text.
-              existing.text = m.text.length >= (existing.text?.length || 0) ? m.text : existing.text;
-              existing.externalId = m.externalId!;
-              synced++;
-              continue;
+        /* Collect DB writes during the loop and dispatch them concurrently
+         * after — keeps each iteration sync (no `await`-in-loop lint) and
+         * lets TypeORM batch the round-trips. The in-memory mutations to
+         * `recentAssistants` still happen synchronously inside the loop so
+         * subsequent iterations consult the updated text/externalId; the
+         * pending DB update for that same row is independent and safe to
+         * resolve in parallel.
+         *
+         * Index-style loop, not `for…of`: the eslint preset (Airbnb) bans
+         * `for…of` because it expands to a generator under transpile. */
+        const pendingUpdates: { id: number; patch: Record<string, unknown> }[] = [];
+        for (let i = 0; i < toInsert.length; i += 1) {
+          const m = toInsert[i];
+          /* `existing` is only resolved for assistant rows with non-empty
+           * text — user rows never coalesce, and an empty assistant slot
+           * has nothing to match against. The ternary keeps the lookup
+           * gated so we can fall through to a single insert/update branch
+           * below and avoid `continue` (banned by the eslint preset). */
+          const existing =
+            m.role === 'assistant' && m.text
+              ? recentAssistants.find(
+                  (r) =>
+                    (r.text && m.text.startsWith(r.text)) ||
+                    (r.text && r.text.startsWith(m.text)) ||
+                    r.text === m.text
+                )
+              : undefined;
+
+          if (existing) {
+            const patch: Record<string, unknown> = { externalId: m.externalId };
+            /* Two scenarios overwrite the stored text:
+             *   1. The candidate is longer — normal "in-flight stream
+             *      grew" case, prefer the more complete reply.
+             *   2. The existing row is exactly K copies of the candidate
+             *      — legacy row saved before the JSONL parser learned to
+             *      collapse gateway-v4 self-repeats. Without this, rows
+             *      polluted by the K-copy bug stay corrupted forever
+             *      because the K×N stored text "wins" the longer-of test
+             *      every poll. Prefer the canonical 1× form. */
+            const existingText = existing.text || '';
+            if (m.text.length >= existingText.length) {
+              patch.text = m.text;
+            } else if (ocService.isSelfRepeatOf(existingText, m.text)) {
+              patch.text = m.text;
             }
+            if (m.thinking) patch.thinking = m.thinking;
+            if (m.toolSteps && m.toolSteps.length > 0) patch.toolSteps = m.toolSteps;
+            pendingUpdates.push({ id: existing._id, patch });
+            if (patch.text) existing.text = m.text;
+            existing.externalId = m.externalId!;
+            synced += 1;
+          } else {
+            actualInserts.push(m);
           }
-          actualInserts.push(m);
+        }
+
+        if (pendingUpdates.length) {
+          await Promise.all(
+            pendingUpdates.map((u) =>
+              msgRepo.update(u.id, u.patch as unknown as Parameters<typeof msgRepo.update>[1])
+            )
+          );
         }
 
         if (actualInserts.length) {
@@ -467,9 +490,7 @@ const poll: RequestHandler<{ conversationId: string }, unknown, never, { after?:
        *    overwrite the stale doubled value so the UI heals on next poll.
        *
        *  We compare canonical JSON to skip no-op writes. */
-      const liveAssistants = jsonlMessages.filter(
-        (m) => m.role === 'assistant' && m.externalId
-      );
+      const liveAssistants = jsonlMessages.filter((m) => m.role === 'assistant' && m.externalId);
       if (liveAssistants.length) {
         const liveIds = liveAssistants.map((m) => m.externalId!);
         const existing = await msgRepo.find({

@@ -5,6 +5,7 @@ export {
   readFirstUserMessage,
   extractUserText,
   extractAssistantText,
+  isSelfRepeatOf,
 } from './jsonlParser';
 export {
   listSessions,
