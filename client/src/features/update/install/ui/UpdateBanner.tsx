@@ -10,7 +10,9 @@ export default function UpdateBanner() {
   const [phase, setPhase] = useState<'idle' | 'updating' | 'restarting'>('idle');
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const { data } = useCheckUpdateQuery(undefined, { pollingInterval: 7_200_000 });
+  const { data, refetch } = useCheckUpdateQuery(undefined, {
+    pollingInterval: 7_200_000,
+  });
   const [applyUpdate] = useApplyUpdateMutation();
 
   const cleanup = () => {
@@ -64,7 +66,8 @@ export default function UpdateBanner() {
     setTimeout(() => {
       cleanup();
       setPhase('idle');
-    }, 300000);
+      refetch();
+    }, 900000);
   };
 
   if (!data?.available && phase === 'idle') return null;
@@ -93,8 +96,7 @@ export default function UpdateBanner() {
     >
       {phase === 'idle' && (
         <>
-          <SystemUpdateAlt sx={{ fontSize: 14 }} />
-          v{data?.latest} available
+          <SystemUpdateAlt sx={{ fontSize: 14 }} />v{data?.latest} available
         </>
       )}
       {phase === 'updating' && (

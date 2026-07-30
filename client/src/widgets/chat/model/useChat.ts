@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { useAppDispatch } from '../../../app/store/hooks';
 import {
   messagesApi,
@@ -39,6 +46,10 @@ export function useChat(conversationId: string | undefined): ChatState {
   const messages = useMemo<Message[]>(() => data?.items ?? [], [data?.items]);
   const hasMore = (data as MessagesResponse | undefined)?.hasMore ?? false;
 
+  // Polling: only fetch messages newer than the latest one we have.
+  // Skip while streaming so SSE flow owns the update.
+  const lastMessageTs = messages.length > 0 ? messages[messages.length - 1].createdAt : undefined;
+
   const {
     isStreaming,
     streamingText,
@@ -53,11 +64,8 @@ export function useChat(conversationId: string | undefined): ChatState {
     conversationId,
     refetch,
     hasMessages: messages.length > 0,
+    lastMessageTs,
   });
-
-  // Polling: only fetch messages newer than the latest one we have.
-  // Skip while streaming so SSE flow owns the update.
-  const lastMessageTs = messages.length > 0 ? messages[messages.length - 1].createdAt : undefined;
 
   const { data: pollData } = usePollMessagesQuery(
     { conversationId: conversationId!, after: lastMessageTs },
@@ -138,6 +146,51 @@ export function useChat(conversationId: string | undefined): ChatState {
     scrollTickRef.current = now;
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [streamingText, streamingThinking]);
+
+  /* Snap to the bottom when streaming transitions true → false.
+   *
+   * Background: with the post-stream `pollMessages` merge in
+   * `useSendMessage`, the `dispatch(updateQueryData(...))` that appends the
+   * assistant row is synchronous and gets auto-batched by React 18 with the
+   * `set*('')` clears in `useSendMessage`'s `finally`. The messages effect
+   * above therefore runs exactly once, with `pendingUserText` already
+   * cleared, and its scroll-to-bottom branch never fires. Worse, the
+   * persisted bubble's height usually differs from the streaming bubble's
+   * (Thought-Process collapses, markdown re-renders, tool blocks appear),
+   * so the viewport visibly shifts.
+   *
+   * Two layout phases to handle:
+   *   1. SYNCHRONOUS swap. The streaming bubble unmounts and the persisted
+   *      bubble mounts in the same React commit. `useLayoutEffect` lets us
+   *      adjust scrollTop in that same commit, BEFORE the browser paints —
+   *      so the user never sees the intermediate "shorter content at the
+   *      bottom" frame. `behavior: 'auto'` is mandatory here (smooth would
+   *      reintroduce the visible animation we are trying to hide).
+   *   2. ASYNC reflows after first mount. On the FIRST send after a hard
+   *      refresh, the persisted bubble's deps (markdown renderer, syntax
+   *      highlighter, image decoders) resolve a frame or two later and
+   *      grow the bubble. Subsequent sends in the same session never hit
+   *      this because those deps are cached — which is exactly the
+   *      "happens once after refresh, then stops" symptom. Re-scrolling at
+   *      0 / 120 / 400 ms catches all three reflow generations we have
+   *      observed; the cleanup tears them down if the user navigates away
+   *      mid-window. */
+  const prevIsStreaming = useRef(isStreaming);
+  useLayoutEffect(() => {
+    const wasStreaming = prevIsStreaming.current;
+    prevIsStreaming.current = isStreaming;
+    if (!wasStreaming || isStreaming) return undefined;
+    const snap = () => {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
+    };
+    snap();
+    const t1 = window.setTimeout(snap, 120);
+    const t2 = window.setTimeout(snap, 400);
+    return () => {
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
+    };
+  }, [isStreaming]);
 
   const [prevConvId, setPrevConvId] = useState(conversationId);
   if (prevConvId !== conversationId) {

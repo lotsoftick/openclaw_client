@@ -79,7 +79,11 @@ export async function checkForUpdate(): Promise<UpdateStatus> {
 }
 
 export function getUpdateStatus(): UpdateStatus {
-  return cached;
+  const fresh = readLocalMeta().version;
+  const available = Boolean(
+    cached.available && cached.latest && compareVersions(cached.latest, fresh) > 0
+  );
+  return { ...cached, current: fresh, available };
 }
 
 export function isUpdating(): boolean {

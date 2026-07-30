@@ -76,6 +76,14 @@ export default function MessageList({ chat }: MessageListProps) {
         minWidth: 0,
         overflowY: 'auto',
         overflowX: 'hidden',
+        /* Disable browser scroll-anchoring. When the streaming MessageBubble
+         * unmounts at end-of-turn and the persisted one mounts in its place
+         * the layout height changes (Thought-Process collapses, markdown
+         * re-renders, tool-step blocks appear). With anchoring on, the
+         * browser shifts scrollTop to keep an upper element pinned, which
+         * the user sees as the chat "jumping up". Anchoring off lets our
+         * explicit scroll-to-bottom triggers stay authoritative. */
+        overflowAnchor: 'none',
         px: { xs: 2, sm: 2, md: 3 },
         py: 2,
       }}

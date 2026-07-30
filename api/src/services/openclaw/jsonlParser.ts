@@ -144,65 +144,105 @@ export function extractUserText(raw: string): string {
 }
 
 /**
- * Detect and remove self-repeated text. Gateway v4 can write the same
- * assistant text 2-4x concatenated within a single JSONL entry.
- * Only deduplicates exact N-copy repeats to avoid false positives.
+ * Detect and remove self-repeated text. Gateway v4 keeps re-writing the
+ * same assistant turn into a single JSONL entry across multi-pass
+ * playback, so a reply that started as N chars ends up stored as K×N for
+ * some K ≥ 2 (K observed in the wild: 2, 3, 4 … 7+).
+ *
+ * The previous heuristic only tried K = 2..6 by trial division, so a
+ * 7-copy entry slipped through unchanged and the UI rendered the body
+ * seven times (see openclaw_client #?, screenshot 2026-05-26). It's also
+ * the same shape the upstream OpenClaw default UI shows when reading the
+ * raw JSONL — i.e. the duplication is baked into the file, our parser is
+ * the only line of defence.
+ *
+ * Strategy:
+ *   1. KMP failure function gives us the minimal period of the string in
+ *      O(N). If the string is exactly K copies of a prefix p, then
+ *      n % period === 0 with period < n, and we return p — no matter what
+ *      K is. This handles the 7-copy case (and any larger K future
+ *      gateway versions might emit).
+ *   2. We keep the existing whitespace-tolerant fuzzy heuristic as a
+ *      fallback for the rare case where copies are separated by a stray
+ *      space/newline that breaks strict periodicity, and extend it to
+ *      K = 8 to match the new strict-mode ceiling.
+ *
+ * The 20-char floor on `period` is kept so legitimately repetitive short
+ * prose ("ha ha ha …", "ok ok ok …") isn't collapsed.
  */
 function deduplicateSelfRepeat(text: string): string {
   if (!text || text.length < 40) return text;
-  // Normalize: collapse runs of newlines to single newline for matching,
-  // but return the original first segment (untouched) on match.
-  const normalized = text.replace(/\n{2,}/g, '\n');
-  for (let n = 2; n <= 6; n++) {
-    // Try exact division on normalized text
-    if (normalized.length % n === 0) {
-      const segLen = normalized.length / n;
-      const seg = normalized.slice(0, segLen);
-      let isRepeat = true;
-      for (let i = 1; i < n; i++) {
-        if (normalized.slice(i * segLen, (i + 1) * segLen) !== seg) {
-          isRepeat = false;
-          break;
-        }
-      }
-      if (isRepeat) {
-        // Return the original (un-normalized) first segment
-        // Find where the first copy ends in the original text
-        const firstCopyEnd = text.indexOf(seg.slice(-20)) + 20;
-        // Safer: just split by the segment and return first match
-        return text.slice(0, text.length / n).trim();
-      }
-    }
-    // Also try with flexible boundaries: check if the first ~1/n of the
-    // text repeats by searching for it later in the string
-    const approxLen = Math.floor(text.length / n);
-    for (let fuzz = -2; fuzz <= 2; fuzz++) {
+  const n = text.length;
+
+  /* KMP failure function — failure[i] = length of the longest proper
+   * prefix of text[0..i] that is also a suffix. Standard textbook impl. */
+  const failure = new Array<number>(n).fill(0);
+  for (let i = 1; i < n; i += 1) {
+    let j = failure[i - 1];
+    while (j > 0 && text[i] !== text[j]) j = failure[j - 1];
+    if (text[i] === text[j]) j += 1;
+    failure[i] = j;
+  }
+  const period = n - failure[n - 1];
+  if (period >= 20 && period < n && n % period === 0) {
+    return text.slice(0, period).trim();
+  }
+
+  /* Whitespace-tolerant fallback: KMP requires strict equality, so a
+   * stray space between copies defeats it. The brute-force candidate
+   * scan below tolerates inter-copy whitespace. K = 2..8 covers every
+   * gateway-v4 case we've observed; legitimate non-repeated text just
+   * exits the loop without a match. */
+  for (let copies = 2; copies <= 8; copies += 1) {
+    const approxLen = Math.floor(n / copies);
+    for (let fuzz = -2; fuzz <= 2; fuzz += 1) {
       const tryLen = approxLen + fuzz;
-      if (tryLen < 20 || tryLen >= text.length) continue;
+      if (tryLen < 20 || tryLen >= n) continue;
       const candidate = text.slice(0, tryLen).trim();
       if (!candidate) continue;
-      // Check if the rest of the text is just repeats of candidate (with whitespace flex)
       let pos = tryLen;
-      let copies = 1;
-      while (pos < text.length) {
-        // Skip whitespace between copies
-        while (pos < text.length && /\s/.test(text[pos])) pos++;
-        if (pos >= text.length) break;
+      let count = 1;
+      while (pos < n) {
+        while (pos < n && /\s/.test(text[pos])) pos += 1;
+        if (pos >= n) break;
         if (text.startsWith(candidate, pos)) {
-          copies++;
+          count += 1;
           pos += candidate.length;
         } else {
           break;
         }
       }
-      // Allow trailing whitespace
       const remaining = text.slice(pos).trim();
-      if (copies === n && remaining.length === 0) {
+      if (count === copies && remaining.length === 0) {
         return candidate;
       }
     }
   }
   return text;
+}
+
+/**
+ * True iff `longer` is exactly K ≥ 2 consecutive copies of `shorter`.
+ *
+ * Used by the poll handler to recognise legacy DB rows that were saved
+ * before {@link deduplicateSelfRepeat} learned to collapse K-copy
+ * gateway-v4 self-repeats. Without this, the row's stored text stays
+ * stuck at K×N for that conversation forever, because the prefix-match
+ * dedup in `controller.poll` prefers the longer of (existing, candidate)
+ * — which is the corrupted one.
+ */
+export function isSelfRepeatOf(longer: string, shorter: string): boolean {
+  if (!shorter || !longer) return false;
+  if (longer.length <= shorter.length) return false;
+  if (longer.length % shorter.length !== 0) return false;
+  const k = longer.length / shorter.length;
+  if (k < 2) return false;
+  for (let i = 0; i < k; i += 1) {
+    if (longer.slice(i * shorter.length, (i + 1) * shorter.length) !== shorter) {
+      return false;
+    }
+  }
+  return true;
 }
 
 export function extractAssistantText(raw: string): string {
