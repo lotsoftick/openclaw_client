@@ -63,19 +63,19 @@ npm start
 
 OpenClaw Client can run external OpenClaw plugins through the same local
 OpenClaw CLI it already manages. For agents that need X/Twitter research,
-monitoring, follower context, media workflows, or reviewed posting, install
-TweetClaw from npm and then verify it in the Client Plugins and Skills pages:
+monitoring, follower context, media workflows, or reviewed publishing, install
+TweetClaw from Xquik's verified ClawHub publisher:
 
 ```bash
-openclaw plugins install @xquik/tweetclaw
+openclaw plugins install clawhub:@xquik/tweetclaw
 openclaw config set tools.alsoAllow '["explore", "tweetclaw"]'
-openclaw plugins inspect tweetclaw --runtime
+openclaw plugins inspect tweetclaw --runtime --json
+openclaw skills info tweetclaw
 ```
 
 See [TweetClaw X/Twitter Workflows](docs/tweetclaw-x-twitter-workflows.md) for a
-complete setup path, credential safety notes, agent prompts, Cron job recipes,
-and approval boundaries for post tweets, post tweet replies, direct messages,
-media upload, media download, monitor tweets, webhooks, and giveaway draws.
+complete setup path, credential safety notes, agent prompts, Cron recipes,
+runtime checks, and approval boundaries.
 
 ## Default Login
 
